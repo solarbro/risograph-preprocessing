@@ -18,6 +18,10 @@ def cosine_similarity(X, Y):
     sim = XdotY / (normX * normY + 1e-5)
     return sim
 
+def distance(X, Y):
+    diff = Y - X
+    return np.sum(diff * diff, axis=-1, keepdims=True)
+
 def normalize_weight(weight):
     return (weight - weight.min()) / (weight.max() - weight.min() + 1e-8)
 
@@ -41,11 +45,13 @@ def rgb2kmeans(input_path, num_buckets, invert, output_prefix):
     clamped = np.take(centroids, buckets, axis=0)
     layers = []
     for i in range(num_buckets):
-        l = cosine_similarity(pixels, centroids[i])
+        l = distance(pixels, centroids[i])
+        l = np.clip(l, 0, 1)
+        # l = cosine_similarity(pixels, centroids[i])
         # Cosine similarity is in the -1:1 range. Shift to 0:1.
-        l = (l + 1) * 0.5
+        # l = (l + 1) * 0.5
         # Normalize the weight
-        l = normalize_weight(l)
+        # l = normalize_weight(l)
         if invert:
             l = 1 - l
         layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
@@ -56,9 +62,9 @@ def rgb2kmeans(input_path, num_buckets, invert, output_prefix):
     axes = axes.flatten() if num_buckets > 1 else [axes]
     for i, ax in enumerate(axes):
         if i < num_buckets:
-            # preview = (1 - layers[i]) * centroids[i] + layers[i] * white
-            # ax.imshow(preview)
-            ax.imshow(layers[i], cmap='gray', vmin=0, vmax=1)
+            preview = (1 - layers[i]) * centroids[i] + layers[i] * white
+            ax.imshow(preview)
+            # ax.imshow(layers[i], cmap='gray', vmin=0, vmax=1)
             ax.set_title(f'{i + 1} - {centroids[i]}')
             ax.axis("off")
         else:
