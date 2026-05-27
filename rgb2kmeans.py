@@ -19,8 +19,9 @@ def cosine_similarity(X, Y):
     return sim
 
 def distance(X, Y):
-    diff = Y - X
-    return np.sum(diff * diff, axis=-1, keepdims=True)
+    # diff = Y - X
+    # return np.sum(diff * diff, axis=-1, keepdims=True)
+    return np.linalg.norm(Y - X, axis=-1, keepdims=True)
 
 def normalize_weight(weight):
     return (weight - weight.min()) / (weight.max() - weight.min() + 1e-8)
@@ -30,7 +31,7 @@ def save_image(layer, path):
     img = PIL.Image.fromarray(np.squeeze(img, axis=-1))
     img.save(path)
 
-def rgb2kmeans(input_path, num_buckets, invert, output_prefix):
+def rgb2kmeans(input_path, num_buckets, alpha, invert, output_prefix):
     img = load_image(input_path)
     img = (img / 255.).astype(np.float32)
     # plt.imshow(img)
@@ -46,12 +47,7 @@ def rgb2kmeans(input_path, num_buckets, invert, output_prefix):
     layers = []
     for i in range(num_buckets):
         l = distance(pixels, centroids[i])
-        l = np.clip(l, 0, 1)
-        # l = cosine_similarity(pixels, centroids[i])
-        # Cosine similarity is in the -1:1 range. Shift to 0:1.
-        # l = (l + 1) * 0.5
-        # Normalize the weight
-        # l = normalize_weight(l)
+        l = np.clip(l * alpha, 0, 1)
         if invert:
             l = 1 - l
         layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
@@ -83,5 +79,6 @@ if __name__=='__main__':
     parser.add_argument('-p', '--prefix', default='./', help='Output path prefix')
     parser.add_argument('-k', '--buckets', type=int, default=2, help='Number of layers')
     parser.add_argument('-i', '--inverse', action='store_true', help='Invert layer weights')
+    parser.add_argument('-a', '--alpha', type=float, default=1., help='Scaling factor for distance function')
     args = parser.parse_args()
-    rgb2kmeans(args.input, args.buckets, args.inverse, args.prefix)
+    rgb2kmeans(args.input, args.buckets, args.alpha, args.inverse, args.prefix)
