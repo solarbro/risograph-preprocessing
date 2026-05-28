@@ -1,15 +1,16 @@
 import PIL
-import matplotlib
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn
 import math
+from skimage import color
 
 def load_image(path):
     img = PIL.Image.open(path)
     img = np.array(img.getdata()).reshape(img.size[1], img.size[0], len(img.mode))
-    return img[:,:,:-1]
+    if img.shape[-1] > 3:
+        img = img[:,:,:-1]
+    return img
 
 def cosine_similarity(X, Y):
     XdotY = np.sum(X * Y, axis=-1, keepdims=True)
@@ -34,19 +35,26 @@ def save_image(layer, path):
 def rgb2kmeans(input_path, num_buckets, alpha, invert, output_prefix):
     img = load_image(input_path)
     img = (img / 255.).astype(np.float32)
-    # plt.imshow(img)
+    # Use LAB color space, as that maps better to Euclidean distance than RGB 
+    lab = color.rgb2lab(img)
+    # rgb2 = color.lab2rgb(lab)
+    # plt.imshow(rgb2)
     # plt.show()
-    pixels = img.reshape(-1, 3)
+    pixels = lab.reshape(-1, 3)
     model = sklearn.cluster.KMeans(n_clusters=num_buckets, random_state=0).fit(pixels)
     centroids = model.cluster_centers_
     white = np.array([1., 1., 1.])
+    white_lab = np.array([100., 0.01, -0.01])
     # print(f'Centroids: {centroids}')
-    buckets = model.predict(pixels)
+    # buckets = model.predict(pixels)
     # print(f'Buckets: {buckets}')
-    clamped = np.take(centroids, buckets, axis=0)
+    # clamped = np.take(centroids, buckets, axis=0)
     layers = []
     for i in range(num_buckets):
         l = distance(pixels, centroids[i])
+        # In LAB colorspace the distance isn't in the range 0:1 so it's not suitable for interpolation
+        # Divide by an arbitrary max value to "normalize"
+        l /= 200.
         l = np.clip(l * alpha, 0, 1)
         if invert:
             l = 1 - l
@@ -58,8 +66,9 @@ def rgb2kmeans(input_path, num_buckets, alpha, invert, output_prefix):
     axes = axes.flatten() if num_buckets > 1 else [axes]
     for i, ax in enumerate(axes):
         if i < num_buckets:
-            preview = (1 - layers[i]) * centroids[i] + layers[i] * white
-            ax.imshow(preview)
+            preview = (1 - layers[i]) * centroids[i] + layers[i] * white_lab
+            preview_rgb = color.lab2rgb(preview)
+            ax.imshow(preview_rgb)
             # ax.imshow(layers[i], cmap='gray', vmin=0, vmax=1)
             ax.set_title(f'{i + 1} - {centroids[i]}')
             ax.axis("off")

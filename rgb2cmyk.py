@@ -1,6 +1,4 @@
 import PIL
-import matplotlib
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -9,7 +7,9 @@ def load_image(path):
     # Convert to numpy
     img = np.array(img.getdata()).reshape(img.size[1], img.size[0], len(img.mode))
     # Discard alpha channel
-    return img[:,:,:-1]
+    if img.shape[-1] > 3:
+        img = img[:,:,:-1]
+    return img
 
 def visualize_cmyk(img):
     c = img[:,:,0]
