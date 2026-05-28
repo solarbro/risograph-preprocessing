@@ -41,6 +41,7 @@ def rgb2cmyk(input_path, output_prefix):
     cmyk = np.concatenate((inv_cmy, 1-k), axis=-1)
     visualize_cmyk(cmyk)
     # Save layers
+    cmyk = np.clip(cmyk * 255, 0, 255).astype(np.uint8)
     save_image(cmyk[:,:,0], f'{output_prefix}c.png')
     save_image(cmyk[:,:,1], f'{output_prefix}m.png')
     save_image(cmyk[:,:,2], f'{output_prefix}y.png')
