@@ -19,12 +19,13 @@ class Mode(Enum):
     Bucket   = 1
 
 class Options:
-    def __init__(self, k: int, mode: Mode, max_layers: int, alpha: float = 1., invert: bool = False):
+    def __init__(self, k: int, mode: Mode, max_layers: int = 20, alpha: float = 1., invert: bool = False):
         self.k = k
         self.num_initial_k = k
         self.mode = mode
         if self.mode == Mode.Gradient:
             self.max_layers = max_layers
+            self.winner_threshold = None
             self.alpha = alpha
             self.invert = invert
 
@@ -56,13 +57,13 @@ def save_image(layer, path):
     dir_path = os.path.dirname(path)
     os.makedirs(dir_path, exist_ok=True)
     img.save(path)
+    print(f'Saved layer: {path}')
 
-# TODO: This isn't working the way I need it to
 def keep_top_n_layers(layers: list[np.ndarray], n: int, renormalize: bool) -> list[np.ndarray]:
-    print(f'Keep top {n} weights')
+    # print(f'Keep top {n} weights')
     # (K, H, W)
     weights = np.stack(layers, axis=0).squeeze(-1)
-    print(f'Shape of weights: {weights.shape}')
+    # print(f'Shape of weights: {weights.shape}')
     # Find the top N layer indices for each pixel
     top = np.argpartition(weights, n - 1, axis=0)[:n]
     # Discard bottom k - n layers
@@ -74,6 +75,34 @@ def keep_top_n_layers(layers: list[np.ndarray], n: int, renormalize: bool) -> li
     # Restore the trailing singleton dimension
     filtered = np.expand_dims(filtered, axis=-1)
     return list(filtered)
+
+def keep_clear_winner(layers: list[np.ndarray], margin: float = 0.1) -> list[np.ndarray]:
+    # (K, H, W)
+    dist = np.stack(layers, axis=0).squeeze(-1)
+    # Find the closest and second-closest surviving layers
+    order = np.argsort(dist, axis=0)
+    best = order[0]
+    second = order[1]
+    best_dist = np.take_along_axis(dist, order[:1], axis=0)[0]
+    second_dist = np.take_along_axis(dist, order[1:2], axis=0)[0]
+    clear = (second_dist - best_dist) > margin
+    filtered = dist.copy()
+    H, W = best.shape
+    y, x = np.indices((H, W))
+    # Remove all surviving layers at clear-winner pixels
+    filtered[:, clear] = 1.0
+    # Restore only the winner
+    filtered[best[clear], y[clear], x[clear]] = best_dist[clear]
+    # Split layers back
+    filtered = np.expand_dims(filtered, axis=-1)
+    return list(filtered)
+
+def get_scores(centroids, counts):
+    dist = cdist(centroids, centroids)
+    # Note: including counts in the score made the selection worse
+    # size = counts[:, None] + counts[None, :]
+    # return dist * size
+    return dist
 
 def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> list:
     centroids = model.cluster_centers_
@@ -87,11 +116,10 @@ def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> li
     centroids = sums / counts[:, None]
     while len(centroids) > k:
         # Step 2: Find the closest pair
-        # TODO: Use score instead of just distance
-        dist = cdist(centroids, centroids)
+        score = get_scores(centroids, counts)
         # Ignore self-distances
-        np.fill_diagonal(dist, np.inf)
-        i, j = np.unravel_index(np.argmin(dist), dist.shape)
+        np.fill_diagonal(score, np.inf)
+        i, j = np.unravel_index(np.argmin(score), score.shape)
         # Step 3: Merge them
         counts[i] += counts[j]
         sums[i] += sums[j]
@@ -107,15 +135,15 @@ def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> li
         # print(f'sums: {sums}')
         sums = sums[keep]
         # print(f'centroids: {centroids}')
-        centroids = centroids[keep]
+        # centroids = centroids[keep]
+        centroids = sums / counts[:, None]
         # Shift all indices after j by 1
         labels[labels > j] -= 1
+        # Update stats
         K -= 1
     return centroids, labels
 
-def rgb2kmeans(input_path, options: Options):
-    img = load_image(input_path)
-    img = (img / 255.).astype(np.float32)
+def rgb2kmeans(img, options: Options):
     # Use LAB color space, as that maps better to Euclidean distance than RGB 
     lab = color.rgb2lab(img)
     pixels = lab.reshape(-1, 3)
@@ -132,6 +160,8 @@ def rgb2kmeans(input_path, options: Options):
             layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
         # Keep top N layers only and renormalize the weights of the remaining layers
         layers = keep_top_n_layers(layers, options.max_layers, False)
+        if options.winner_threshold is not None:
+            layers = keep_clear_winner(layers, options.winner_threshold)
         # Invert weights
         if options.invert:
             for l in layers:
@@ -162,7 +192,9 @@ if __name__=='__main__':
     else:
         options = Options(args.num_centroids, Mode.Gradient, args.max_overlapping_layers, args.alpha, args.inverse)
     options.num_initial_k = args.initial_centroids
-    layers, centroids = rgb2kmeans(args.input, options)
+    img = load_image(args.input)
+    img = (img / 255.).astype(np.float32)
+    layers, centroids = rgb2kmeans(img, options)
     # Layer previews
     if args.preview:
         white_lab = np.array([100., 0.01, -0.01])
