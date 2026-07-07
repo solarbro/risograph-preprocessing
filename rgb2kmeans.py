@@ -7,27 +7,21 @@ from skimage import color
 from enum import Enum
 from scipy.spatial.distance import cdist
 
-# TODO: 
-# When applying filter, keep only the top layer, if it's the clear winner. Only allow blending 
-# when the top two layers are relatively close to each other.
-# Improve centroid selection. Here are some ideas:
-# - FPS (Farthest Point Sampling)
-# - K-means + centroid pruning
-
 class Mode(Enum):
     Gradient = 0
     Bucket   = 1
 
 class Options:
-    def __init__(self, k: int, mode: Mode, max_layers: int = 20, alpha: float = 1., invert: bool = False):
+    def __init__(self, k: int, mode: Mode, max_layers: int = 20, gamma: float = 1., invert: bool = False):
         self.k = k
         self.num_initial_k = k
         self.mode = mode
         if self.mode == Mode.Gradient:
             self.max_layers = max_layers
             self.winner_threshold = None
-            self.alpha = alpha
+            self.gamma = gamma
             self.invert = invert
+            self.chroma_cutoff = 20.0
 
 def load_image(path):
     img = PIL.Image.open(path)
@@ -47,6 +41,23 @@ def distance(X, Y):
     # diff = Y - X
     # return np.sum(diff * diff, axis=-1, keepdims=True)
     return np.linalg.norm(Y - X, axis=-1, keepdims=True)
+
+def ink_weight(X, Y, gamma, chroma_factor):
+    # Convert to LCH
+    XL, XC, XH = lab_to_lch(X)
+    YL, YC, YH = lab_to_lch(np.expand_dims(Y, axis=0))
+    # Compute hue similarity against centroid
+    dH = circular_hue_diff(YH[:, None], XH[None,:])
+    hue_similarity = (1.0 - dH / np.pi) ** gamma
+    # At this point 1 = similar hue, 0 = opposite hue
+    # Compute darkness. 0 = white, 1 = black
+    darkness = 1.0 - XL / 100.0
+    # Handle gray tones
+    chroma_confidence = np.clip(XC / chroma_factor, 0.0, 1.0)
+    # Final score
+    score = hue_similarity * darkness[None, ...] * chroma_confidence[None, ...]
+    # Invert weight - 0 = full ink, 1 = no ink
+    return 1.0 - score
 
 def normalize_weight(weight):
     return (weight - weight.min()) / (weight.max() - weight.min() + 1e-8)
@@ -97,12 +108,35 @@ def keep_clear_winner(layers: list[np.ndarray], margin: float = 0.1) -> list[np.
     filtered = np.expand_dims(filtered, axis=-1)
     return list(filtered)
 
+# Hue difference with wraparound
+def circular_hue_diff(h1, h2):
+    d = np.abs(h1 - h2)
+    return np.minimum(d, 2*np.pi - d)
+
+def lab_to_lch(value):
+    L = value[:, 0]
+    a = value[:, 1]
+    b = value[:, 2]
+    C = np.sqrt(a*a + b*b)
+    H = np.arctan2(b, a) # [-pi, pi]
+    return L, C, H
+
 def get_scores(centroids, counts):
-    dist = cdist(centroids, centroids)
+    L, C, H = lab_to_lch(centroids)
+    dH = circular_hue_diff(H[:,None], H[None,:])
+    dC = np.abs(C[:, None] - C[None, :])
+    dL = np.abs(L[:, None] - L[None, :])
+    # For gray tones, hue is undefined so it can end up being whatever value
+    # To avoid the hue tone jumping around, apply an additional weight for low chroma colors
+    chroma_weight = np.minimum(C[:, None], C[None, :]) / 20.0
+    chroma_weight = np.clip(chroma_weight, 0.0, 1.0)
+    score = chroma_weight * dH + 0.25 * (dC / 100.0) + 0.10 * (dL / 100.0)
+    return score
+    # dist = cdist(centroids, centroids)
     # Note: including counts in the score made the selection worse
     # size = counts[:, None] + counts[None, :]
     # return dist * size
-    return dist
+    # return dist
 
 def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> list:
     centroids = model.cluster_centers_
@@ -161,11 +195,12 @@ def rgb2kmeans(img, options: Options):
     layers = []
     if options.mode == Mode.Gradient:
         for i in range(options.k):
-            l = distance(pixels, centroids[i])
+            # l = distance(pixels, centroids[i])
             # In LAB colorspace the distance isn't in the range 0:1 so it's not suitable for interpolation
             # Divide by an arbitrary max value to "normalize"
-            l /= 200.
-            l = np.clip(l * options.alpha, 0, 1)
+            # l /= 200.
+            # l = np.clip(l * options.alpha, 0, 1)
+            l = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
             layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
         # Keep top N layers only and renormalize the weights of the remaining layers
         layers = keep_top_n_layers(layers, options.max_layers, False)
@@ -191,7 +226,7 @@ if __name__=='__main__':
     parser.add_argument('-k', '--num_centroids', type=int, default=2, help='Number of layers')
     parser.add_argument('--initial_centroids', type=int, default=20, help='Initial number of centroids before pruning')
     parser.add_argument('-i', '--inverse', action='store_true', help='Invert layer weights')
-    parser.add_argument('-a', '--alpha', type=float, default=1., help='Scaling factor for distance function. Used with gradient mode.')
+    parser.add_argument('-g', '--gamma', type=float, default=1., help='Gain factor used with hue similarity score in gradient mode.')
     parser.add_argument('-b', '--bucket', action='store_true', help='Use bucketing mode instead of gradient. Results in distinct layers with flat colors instead of overlapping gradients.')
     parser.add_argument('-l', '--max_overlapping_layers', default=2, help='Maximum number of overlapping gradients per pixel.')
     parser.add_argument('--preview', action='store_true', help='Display color previews of the separated layers.')
@@ -199,7 +234,7 @@ if __name__=='__main__':
     if args.bucket:
         options = Options(args.num_centroids, Mode.Bucket)
     else:
-        options = Options(args.num_centroids, Mode.Gradient, args.max_overlapping_layers, args.alpha, args.inverse)
+        options = Options(args.num_centroids, Mode.Gradient, args.max_overlapping_layers, args.gamma, args.inverse)
     options.num_initial_k = args.initial_centroids
     img = load_image(args.input)
     img = (img / 255.).astype(np.float32)

@@ -27,16 +27,18 @@ if __name__ == '__main__':
     final_k = st.sidebar.slider("Final K", 1, 16, 4)
     max_blend = st.sidebar.slider("Max Overlapped Layers", 1, 8, 2)
     winner_margin = st.sidebar.slider('Winner Margin', 0.0, 1.0, 0.5, 0.01)
-    alpha = st.sidebar.slider('Alpha', 0.0, 10.0, 1.0, 0.01)
+    gamma = st.sidebar.slider('Gamma', 0.0, 10.0, 4.0, 0.01)
+    chroma = st.sidebar.slider('Chroma Cutoff', 1.0, 100.0, 20.0, 0.1)
     uploaded = st.file_uploader('Image', type=['png', 'jpg', 'jpeg', 'webp'])
     if uploaded is None:
         st.stop()
     src_image = PIL.Image.open(uploaded)
     src_preview = resize_image(src_image, 512)
     src_preview = pil_to_np(src_preview)
-    options = Options(final_k, Mode.Gradient, max_blend, alpha, False) # TODO: invert option
+    options = Options(final_k, Mode.Gradient, max_blend, gamma, False) # TODO: invert option
     options.num_initial_k = initial_k
     options.winner_threshold = winner_margin
+    options.chroma_cutoff = chroma
     layers, centroids = rgb2kmeans(src_preview, options)
     st.image(src_preview, caption="Original")
     # Display layers in grid
