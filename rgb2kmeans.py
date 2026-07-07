@@ -114,16 +114,26 @@ def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> li
     np.add.at(sums, labels, pixels)
     # Recompute centroids from the actual assigned pixels
     centroids = sums / counts[:, None]
-    while len(centroids) > k:
+    while K > k:
         # Step 2: Find the closest pair
         score = get_scores(centroids, counts)
         # Ignore self-distances
         np.fill_diagonal(score, np.inf)
         i, j = np.unravel_index(np.argmin(score), score.shape)
         # Step 3: Merge them
+        # ----------------------------------------
+        # Method 1
         counts[i] += counts[j]
         sums[i] += sums[j]
         centroids[i] = sums[i] / counts[i]
+        # Method 2. More or less the same output as 1.
+        # ci = counts[i]
+        # cj = counts[j]
+        # t = 1.0 / (ci + cj)
+        # wi = ci * t
+        # wj = cj * t
+        # centroids[i] = wi * centroids[i] + wj * centroids[j]
+        # ----------------------------------------
         # Step 4: Update labels
         # All j pixels are reassigned to i
         labels[labels == j] = i
@@ -135,8 +145,7 @@ def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> li
         # print(f'sums: {sums}')
         sums = sums[keep]
         # print(f'centroids: {centroids}')
-        # centroids = centroids[keep]
-        centroids = sums / counts[:, None]
+        centroids = centroids[keep]
         # Shift all indices after j by 1
         labels[labels > j] -= 1
         # Update stats
