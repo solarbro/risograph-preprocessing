@@ -56,8 +56,15 @@ def ink_weight(X, Y, gamma, chroma_factor):
     chroma_confidence = np.clip(XC / chroma_factor, 0.0, 1.0)
     # Final score
     score = hue_similarity * darkness[None, ...] * chroma_confidence[None, ...]
+    # We want to use black ink 
+    # neutrality = 1.0 - chroma_confidence 
+    # Darkening factor is based on how much darker the pixel is relative to the centroid.
+    darkening_factor = np.clip(XL / YL, 0.0, 1.0)
+    b = darkening_factor
+    # Apply gamma to black layer as well
+    b = b ** gamma
     # Invert weight - 0 = full ink, 1 = no ink
-    return 1.0 - score
+    return 1.0 - score, 1.0 - b
 
 def normalize_weight(weight):
     return (weight - weight.min()) / (weight.max() - weight.min() + 1e-8)
@@ -71,6 +78,9 @@ def save_image(layer, path):
     print(f'Saved layer: {path}')
 
 def keep_top_n_layers(layers: list[np.ndarray], n: int, renormalize: bool) -> list[np.ndarray]:
+    if n >= len(layers):
+        # No need to filter
+        return layers
     # print(f'Keep top {n} weights')
     # (K, H, W)
     weights = np.stack(layers, axis=0).squeeze(-1)
@@ -130,7 +140,7 @@ def get_scores(centroids, counts):
     # To avoid the hue tone jumping around, apply an additional weight for low chroma colors
     chroma_weight = np.minimum(C[:, None], C[None, :]) / 20.0
     chroma_weight = np.clip(chroma_weight, 0.0, 1.0)
-    score = chroma_weight * dH + 0.25 * (dC / 100.0) + 0.10 * (dL / 100.0)
+    score = chroma_weight * dH + 1.0 * (dC / 100.0) + 0.10 * (dL / 100.0)
     return score
     # dist = cdist(centroids, centroids)
     # Note: including counts in the score made the selection worse
@@ -191,17 +201,25 @@ def rgb2kmeans(img, options: Options):
     lab = color.rgb2lab(img)
     pixels = lab.reshape(-1, 3)
     model = sklearn.cluster.KMeans(n_clusters=options.num_initial_k, random_state=0).fit(pixels)
-    centroids, labels = prune_model(pixels, model, options.k)
+    centroids, labels = prune_model(pixels, model, options.k - 1)
     layers = []
+    # print(pixels.shape)
     if options.mode == Mode.Gradient:
-        for i in range(options.k):
+        black = np.zeros((pixels.shape[0],))
+        for i in range(len(centroids)):
             # l = distance(pixels, centroids[i])
             # In LAB colorspace the distance isn't in the range 0:1 so it's not suitable for interpolation
             # Divide by an arbitrary max value to "normalize"
             # l /= 200.
             # l = np.clip(l * options.alpha, 0, 1)
-            l = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
+            l, b = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
+            black += b
             layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
+        black /= options.k
+        layers.append((1 - black).reshape(img.shape[0], img.shape[1], 1))
+        bc = np.array([[0.0, 0.0, 0.0]])
+        centroids = np.vstack((centroids, bc))
+        # centroids.append(np.zeros((3)))
         # Keep top N layers only and renormalize the weights of the remaining layers
         layers = keep_top_n_layers(layers, options.max_layers, False)
         if options.winner_threshold is not None:
