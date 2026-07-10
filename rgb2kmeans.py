@@ -7,6 +7,9 @@ from skimage import color
 from enum import Enum
 from scipy.spatial.distance import cdist
 
+# TODO:
+# - Look into other methods for combining the black ink weights
+
 class Mode(Enum):
     Gradient = 0
     Bucket   = 1
@@ -196,6 +199,38 @@ def prune_model(pixels: np.ndarray, model: sklearn.cluster.KMeans, k: int) -> li
         K -= 1
     return centroids, labels
 
+def make_gradient_layers(pixels: np.ndarray, centroids: np.ndarray, options: Options, img_size: tuple = None):
+    if len(pixels.shape) > 2:
+        img_size = pixels.shape
+        # If the shape isn't flattened, then it's probably still RGB as well
+        lab = color.rgb2lab(pixels)
+        pixels = lab.reshape(-1, 3)
+    black = np.zeros((pixels.shape[0],))
+    layers = []
+    for i in range(len(centroids)):
+        # l = distance(pixels, centroids[i])
+        # In LAB colorspace the distance isn't in the range 0:1 so it's not suitable for interpolation
+        # Divide by an arbitrary max value to "normalize"
+        # l /= 200.
+        # l = np.clip(l * options.alpha, 0, 1)
+        l, b = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
+        black += b
+        layers.append(l.reshape((img_size[0], img_size[1], 1)))
+    black /= options.k
+    layers.append((1 - black).reshape(img_size[0], img_size[1], 1))
+    bc = np.array([[0.0, 0.0, 0.0]])
+    centroids = np.vstack((centroids, bc))
+    # centroids.append(np.zeros((3)))
+    # Keep top N layers only and renormalize the weights of the remaining layers
+    layers = keep_top_n_layers(layers, options.max_layers, False)
+    if options.winner_threshold is not None:
+        layers = keep_clear_winner(layers, options.winner_threshold)
+    # Invert weights
+    if options.invert:
+        for l in layers:
+            l = 1 - l
+    return layers, centroids
+
 def rgb2kmeans(img, options: Options):
     # Use LAB color space, as that maps better to Euclidean distance than RGB 
     lab = color.rgb2lab(img)
@@ -205,29 +240,7 @@ def rgb2kmeans(img, options: Options):
     layers = []
     # print(pixels.shape)
     if options.mode == Mode.Gradient:
-        black = np.zeros((pixels.shape[0],))
-        for i in range(len(centroids)):
-            # l = distance(pixels, centroids[i])
-            # In LAB colorspace the distance isn't in the range 0:1 so it's not suitable for interpolation
-            # Divide by an arbitrary max value to "normalize"
-            # l /= 200.
-            # l = np.clip(l * options.alpha, 0, 1)
-            l, b = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
-            black += b
-            layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
-        black /= options.k
-        layers.append((1 - black).reshape(img.shape[0], img.shape[1], 1))
-        bc = np.array([[0.0, 0.0, 0.0]])
-        centroids = np.vstack((centroids, bc))
-        # centroids.append(np.zeros((3)))
-        # Keep top N layers only and renormalize the weights of the remaining layers
-        layers = keep_top_n_layers(layers, options.max_layers, False)
-        if options.winner_threshold is not None:
-            layers = keep_clear_winner(layers, options.winner_threshold)
-        # Invert weights
-        if options.invert:
-            for l in layers:
-                l = 1 - l
+        layers, centroids = make_gradient_layers(pixels, centroids, options, img.shape)
     elif options.mode == Mode.Bucket:
         for i in range(options.k):
             l = np.where(labels == i, 0, 1).astype(np.float32)

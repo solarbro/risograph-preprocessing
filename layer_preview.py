@@ -1,4 +1,4 @@
-from rgb2kmeans import rgb2kmeans, Options, Mode, save_image
+from rgb2kmeans import rgb2kmeans, make_gradient_layers, Options, Mode, save_image
 import PIL
 import numpy as np
 import streamlit as st
@@ -53,10 +53,10 @@ if __name__ == '__main__':
             preview = (1 - layers[i]) * centroids[i] + layers[i] * white_lab
             preview_rgb = color.lab2rgb(preview)
             st.image(preview_rgb, caption=f'Layer {i}')
-    # TODO: Composite image
     prefix = st.text_input('Export prefix', './')
     if st.button('Export'):
         full_res = pil_to_np(src_image)
-        layers, centroids = rgb2kmeans(full_res, options)
+        # layers, centroids = rgb2kmeans(full_res, options)
+        layers, _ = make_gradient_layers(full_res, centroids[0:-1], options)
         for i in range(len(layers)):
             save_image(layers[i], f'{prefix}layer_{i + 1}.png')
