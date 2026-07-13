@@ -25,6 +25,8 @@ class Options:
             self.gamma = gamma
             self.invert = invert
             self.chroma_cutoff = 20.0
+            self.black_gather_fn = 'mean'
+            self.power_mean = 1.0
 
 def load_image(path):
     img = PIL.Image.open(path)
@@ -65,7 +67,7 @@ def ink_weight(X, Y, gamma, chroma_factor):
     darkening_factor = np.clip(XL / YL, 0.0, 1.0)
     b = darkening_factor
     # Apply gamma to black layer as well
-    b = b ** gamma
+    # b = b ** gamma
     # Invert weight - 0 = full ink, 1 = no ink
     return 1.0 - score, 1.0 - b
 
@@ -214,9 +216,17 @@ def make_gradient_layers(pixels: np.ndarray, centroids: np.ndarray, options: Opt
         # l /= 200.
         # l = np.clip(l * options.alpha, 0, 1)
         l, b = ink_weight(pixels, centroids[i], options.gamma, options.chroma_cutoff)
-        black += b
+        if options.black_gather_fn == 'max':
+            black = np.maximum(black, b)
+        else:
+            if options.power_mean > 1.0:
+                b = b ** options.power_mean
+            black += b 
         layers.append(l.reshape((img_size[0], img_size[1], 1)))
-    black /= options.k
+    if options.black_gather_fn == 'mean':
+        black /= len(centroids)
+        if options.power_mean > 1.0:
+            black = black ** (1.0 / options.power_mean)
     layers.append((1 - black).reshape(img_size[0], img_size[1], 1))
     bc = np.array([[0.0, 0.0, 0.0]])
     centroids = np.vstack((centroids, bc))
@@ -247,6 +257,22 @@ def rgb2kmeans(img, options: Options):
             layers.append(l.reshape((img.shape[0], img.shape[1], 1)))
     else:
         raise ValueError(f'Unexpected value for mode {options.mode}')
+    return layers, centroids
+
+def rgb2cmy(img, gamma):
+    lab = color.rgb2lab(img)
+    pixels = lab.reshape(-1, 3)
+    # cmy = 1 - pixels 
+    # csum = np.sum(cmy, axis=-1, keepdims=True)
+    # cmy /= csum
+    # inv_cmy = 1 - cmy
+    # inv_cmy = inv_cmy ** gamma
+    riso_blue = np.array([0, 120, 191])
+    riso_fluo_pink = np.array([255, 72, 176])
+    riso_yellow = np.array([255, 232, 0])
+    centroids = color.rgb2lab(np.stack([riso_blue, riso_fluo_pink, riso_yellow], axis=0) / 255.)
+    options = Options(4, Mode.Gradient, 4, gamma, False) 
+    layers, centroids = make_gradient_layers(pixels, centroids, options, img.shape)
     return layers, centroids
 
 if __name__=='__main__':
